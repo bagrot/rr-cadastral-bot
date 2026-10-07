@@ -1,0 +1,15 @@
+{
+  "name": "rr-cadastral-bot",
+  "version": "2.9.0",
+  "private": true,
+  "description": "Bot for collecting NSPD and Rosreestr cadastral data into Google Sheets through an existing Chrome CDP session.",
+  "main": "start.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node start.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.57.0"
+  }
+}
