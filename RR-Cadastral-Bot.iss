@@ -1,5 +1,5 @@
 #define MyAppName "Кадастробот"
-#define MyAppVersion "2.9.0"
+#define MyAppVersion "3.0.4"
 #define MyAppPublisher "Кадастробот"
 #define MyAppExeName "RR-Cadastral-Bot.exe"
 
@@ -29,13 +29,14 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительно:"; Flags: unchecked
 
 [Files]
-Source: "RR-Cadastral-Bot-2.9-final.exe"; DestDir: "{app}"; DestName: "RR-Cadastral-Bot.exe"; Flags: ignoreversion
+Source: "RR-Cadastral-Bot-3.0.4.exe"; DestDir: "{app}"; DestName: "RR-Cadastral-Bot.exe"; Flags: ignoreversion
 Source: "start.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "package.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "package-lock.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "QUICK_START.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "UPDATE_RELEASE_GUIDE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "node_modules\*"; DestDir: "{app}\node_modules"; Flags: ignoreversion recursesubdirs createallsubdirs
 

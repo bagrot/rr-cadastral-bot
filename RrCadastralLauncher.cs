@@ -4,9 +4,12 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace RrCadastralBot
@@ -257,15 +260,21 @@ namespace RrCadastralBot
         private readonly ToolTip toolTips = new ToolTip();
         private readonly Panel workspaceHost = new Panel();
         private readonly Dictionary<string, ModernButton> navigationButtons = new Dictionary<string, ModernButton>();
+        private readonly ModernButton updateButton = new ModernButton();
         private Control activeWorkspacePage;
-        private bool linksUnlocked;
+        private bool updateCheckInProgress;
+        private string availableUpdateUrl;
+        private string availableUpdateVersion;
+        private string availableUpdateSha256;
         private Process runningProcess;
         private Button stopButton;
         private string sessionLogPath;
 
         private const string ChromePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
         private const string ChromeArgs = @"--remote-debugging-port=9222 --user-data-dir=""C:\chrome-remote"" --profile-directory=Default";
-        private static readonly string LinksPassword = Environment.GetEnvironmentVariable("RR_LINKS_PASSWORD") ?? "";
+        private const string CurrentVersion = "3.0.4";
+        private const string UpdateApiUrl = "https://api.github.com/repos/bagrot/rr-cadastral-bot/releases/latest";
+        private const string InstallerAssetName = "RR-Cadastral-Bot-Setup.exe";
         private readonly Color panelColor = Color.FromArgb(18, 22, 28);
         private readonly Color cardColor = Color.FromArgb(21, 26, 33);
         private readonly Color buttonColor = Color.FromArgb(30, 36, 45);
@@ -277,7 +286,7 @@ namespace RrCadastralBot
 
         public LauncherForm()
         {
-            Text = "Кадастробот 2.9";
+            Text = "Кадастробот " + CurrentVersion;
             Width = 1280;
             Height = 850;
             MinimumSize = new Size(1080, 780);
@@ -295,6 +304,7 @@ namespace RrCadastralBot
                 Margin = new Padding(0),
                 Padding = new Padding(0)
             };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Controls.Add(root);
@@ -302,21 +312,33 @@ namespace RrCadastralBot
             var header = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 1,
+                ColumnCount = 2,
                 RowCount = 1,
                 BackColor = Color.FromArgb(15, 18, 23),
                 Padding = new Padding(24, 10, 24, 10),
                 Margin = new Padding(0)
             };
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
             root.Controls.Add(header, 0, 0);
 
             var brandText = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1, Margin = new Padding(0) };
             brandText.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
             brandText.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
             brandText.Controls.Add(new Label { Text = "Кадастробот", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft, Font = new Font("Segoe UI Semibold", 17F), ForeColor = textColor });
-            brandText.Controls.Add(new Label { Text = "Сбор кадастровых данных", Dock = DockStyle.Fill, TextAlign = ContentAlignment.TopLeft, Font = new Font("Segoe UI", 9F), ForeColor = mutedColor });
+            brandText.Controls.Add(new Label { Text = "Сбор кадастровых данных  ·  версия " + CurrentVersion, Dock = DockStyle.Fill, TextAlign = ContentAlignment.TopLeft, Font = new Font("Segoe UI", 9F), ForeColor = mutedColor });
             header.Controls.Add(brandText, 0, 0);
+
+            updateButton.Text = "Проверить обновления";
+            updateButton.Dock = DockStyle.Fill;
+            updateButton.Margin = new Padding(12, 3, 0, 3);
+            updateButton.ButtonColor = buttonColor;
+            updateButton.HoverColor = buttonHoverColor;
+            updateButton.DownColor = buttonDownColor;
+            updateButton.ForeColor = textColor;
+            updateButton.Click += async (sender, args) => await HandleUpdateButtonAsync();
+            toolTips.SetToolTip(updateButton, "Проверить и скачать новую версию Кадастробота");
+            header.Controls.Add(updateButton, 1, 0);
 
             var main = new TableLayoutPanel
             {
@@ -493,18 +515,16 @@ namespace RrCadastralBot
             workspaceHost.Controls.Add(logPage);
             workspaceHost.Controls.Add(helpPage);
             workspaceHost.Controls.Add(linksPage);
+            logPage.Visible = true;
+            helpPage.Visible = false;
+            linksPage.Visible = false;
 
             var logNav = MakeNavigationButton("Журнал", "log", navigation);
             var helpNav = MakeNavigationButton("Инструкция", "help", navigation);
             var linksNav = MakeNavigationButton("Источники", "links", navigation);
             logNav.Click += (sender, args) => ShowWorkspacePage(logPage, "log");
             helpNav.Click += (sender, args) => ShowWorkspacePage(helpPage, "help");
-            linksNav.Click += (sender, args) =>
-            {
-                if (!linksUnlocked && !AskPassword()) return;
-                linksUnlocked = true;
-                ShowWorkspacePage(linksPage, "links");
-            };
+            linksNav.Click += (sender, args) => ShowWorkspacePage(linksPage, "links");
             ShowWorkspacePage(logPage, "log");
 
             FormClosing += (sender, args) =>
@@ -520,6 +540,8 @@ namespace RrCadastralBot
                     StopRunningProcess();
                 }
             };
+
+            Shown += async (sender, args) => await CheckForUpdatesAsync(false);
         }
 
         private Label MakeLabel(string text)
@@ -647,6 +669,210 @@ namespace RrCadastralBot
             toolTips.SetToolTip(button, hint);
         }
 
+        private sealed class UpdateInfo
+        {
+            public string Version { get; set; }
+            public string DownloadUrl { get; set; }
+            public string Sha256 { get; set; }
+        }
+
+        private async Task HandleUpdateButtonAsync()
+        {
+            if (string.IsNullOrWhiteSpace(availableUpdateUrl))
+            {
+                await CheckForUpdatesAsync(true);
+                return;
+            }
+
+            if (runningProcess != null && !runningProcess.HasExited)
+            {
+                MessageBox.Show(
+                    "Сейчас идёт сбор данных. Дождитесь завершения или остановите сбор, затем запустите обновление.",
+                    "Обновление отложено",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            var answer = MessageBox.Show(
+                "Скачать Кадастробот " + availableUpdateVersion + " и запустить установку?\n\nПосле загрузки приложение закроется, а установщик откроется автоматически.",
+                "Доступно обновление",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes) return;
+
+            await DownloadAndRunUpdateAsync();
+        }
+
+        private async Task CheckForUpdatesAsync(bool manual)
+        {
+            if (updateCheckInProgress) return;
+            updateCheckInProgress = true;
+            updateButton.Enabled = false;
+            updateButton.Text = "Проверяю обновление...";
+
+            try
+            {
+                var info = await Task.Run(() => GetLatestUpdate());
+                Version current;
+                Version latest;
+                if (!Version.TryParse(CurrentVersion, out current) ||
+                    !Version.TryParse(NormalizeVersion(info.Version), out latest))
+                    throw new InvalidOperationException("GitHub вернул некорректный номер версии.");
+
+                if (latest > current)
+                {
+                    availableUpdateUrl = info.DownloadUrl;
+                    availableUpdateVersion = latest.ToString();
+                    availableUpdateSha256 = info.Sha256;
+                    updateButton.Text = "Обновить до " + availableUpdateVersion;
+                    updateButton.ButtonColor = Color.FromArgb(45, 126, 87);
+                    updateButton.HoverColor = Color.FromArgb(54, 148, 102);
+                    updateButton.DownColor = Color.FromArgb(36, 104, 71);
+                    updateButton.Enabled = true;
+                    toolTips.SetToolTip(updateButton, "Нажмите, чтобы скачать и установить новую версию");
+                    AppendLog("Доступно обновление Кадастробота: " + availableUpdateVersion + ".");
+                }
+                else
+                {
+                    availableUpdateUrl = null;
+                    availableUpdateVersion = null;
+                    availableUpdateSha256 = null;
+                    updateButton.Text = "Версия " + CurrentVersion + " актуальна";
+                    updateButton.ButtonColor = buttonColor;
+                    updateButton.HoverColor = buttonHoverColor;
+                    updateButton.DownColor = buttonDownColor;
+                    updateButton.Enabled = true;
+                    toolTips.SetToolTip(updateButton, "Нажмите, чтобы проверить обновления ещё раз");
+                    if (manual)
+                        MessageBox.Show("У вас установлена последняя версия.", "Обновления", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                availableUpdateUrl = null;
+                availableUpdateVersion = null;
+                availableUpdateSha256 = null;
+                updateButton.Text = "Проверить обновления";
+                updateButton.ButtonColor = buttonColor;
+                updateButton.HoverColor = buttonHoverColor;
+                updateButton.DownColor = buttonDownColor;
+                updateButton.Enabled = true;
+                if (manual)
+                {
+                    MessageBox.Show(
+                        "Не удалось проверить обновление.\n\n" + ex.Message,
+                        "Проверка обновлений",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
+            }
+            finally
+            {
+                updateCheckInProgress = false;
+            }
+        }
+
+        private UpdateInfo GetLatestUpdate()
+        {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            var request = (HttpWebRequest)WebRequest.Create(UpdateApiUrl);
+            request.Method = "GET";
+            request.UserAgent = "KadastrBot-Updater/" + CurrentVersion;
+            request.Accept = "application/vnd.github+json";
+            request.Timeout = 15000;
+            request.ReadWriteTimeout = 15000;
+
+            string json;
+            using (var response = (HttpWebResponse)request.GetResponse())
+            using (var stream = response.GetResponseStream())
+            using (var reader = new StreamReader(stream, Encoding.UTF8))
+                json = reader.ReadToEnd();
+
+            var tagMatch = Regex.Match(json, "\\\"tag_name\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+            if (!tagMatch.Success) throw new InvalidOperationException("В последнем релизе не указан номер версии.");
+
+            var assetPattern = "\\\"name\\\"\\s*:\\s*\\\"" + Regex.Escape(InstallerAssetName) +
+                "\\\"[\\s\\S]*?\\\"digest\\\"\\s*:\\s*\\\"sha256:([a-fA-F0-9]{64})\\\"[\\s\\S]*?" +
+                "\\\"browser_download_url\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"";
+            var assetMatch = Regex.Match(json, assetPattern);
+            if (!assetMatch.Success)
+                throw new InvalidOperationException("В последнем релизе нет файла " + InstallerAssetName + ".");
+            var expectedSha256 = assetMatch.Groups[1].Value.ToUpperInvariant();
+            var installerUrl = assetMatch.Groups[2].Value.Replace("\\/", "/");
+
+            Uri downloadUri;
+            if (!Uri.TryCreate(installerUrl, UriKind.Absolute, out downloadUri) ||
+                downloadUri.Scheme != Uri.UriSchemeHttps ||
+                !downloadUri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("GitHub вернул небезопасную ссылку на установщик.");
+
+            return new UpdateInfo
+            {
+                Version = NormalizeVersion(tagMatch.Groups[1].Value),
+                DownloadUrl = installerUrl,
+                Sha256 = expectedSha256
+            };
+        }
+
+        private string NormalizeVersion(string value)
+        {
+            var match = Regex.Match(value ?? "", @"\d+(?:\.\d+){1,3}");
+            return match.Success ? match.Value : "";
+        }
+
+        private async Task DownloadAndRunUpdateAsync()
+        {
+            var version = string.IsNullOrWhiteSpace(availableUpdateVersion) ? "latest" : availableUpdateVersion;
+            var target = Path.Combine(Path.GetTempPath(), "KadastrBot-Update-" + version.Replace('.', '-') + ".exe");
+            updateButton.Enabled = false;
+            updateButton.Text = "Начинаю загрузку...";
+
+            try
+            {
+                using (var client = new WebClient())
+                {
+                    client.Headers.Add(HttpRequestHeader.UserAgent, "KadastrBot-Updater/" + CurrentVersion);
+                    client.DownloadProgressChanged += (sender, args) =>
+                    {
+                        if (!IsDisposed && IsHandleCreated)
+                            BeginInvoke(new Action(() => updateButton.Text = "Загрузка " + args.ProgressPercentage + "%"));
+                    };
+                    await client.DownloadFileTaskAsync(new Uri(availableUpdateUrl), target);
+                }
+
+                var file = new FileInfo(target);
+                if (!file.Exists || file.Length < 1024 * 1024)
+                    throw new InvalidOperationException("Загруженный установщик повреждён или имеет неверный размер.");
+
+                string actualSha256;
+                using (var sha256 = SHA256.Create())
+                using (var stream = File.OpenRead(target))
+                    actualSha256 = BitConverter.ToString(sha256.ComputeHash(stream)).Replace("-", "");
+                if (string.IsNullOrWhiteSpace(availableUpdateSha256) ||
+                    !actualSha256.Equals(availableUpdateSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Контрольная сумма установщика не совпала с данными GitHub.");
+
+                updateButton.Text = "Запускаю установщик...";
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = target,
+                    UseShellExecute = true
+                });
+                BeginInvoke(new Action(Close));
+            }
+            catch (Exception ex)
+            {
+                updateButton.Text = "Обновить до " + availableUpdateVersion;
+                updateButton.Enabled = true;
+                MessageBox.Show(
+                    "Не удалось скачать обновление.\n\n" + ex.Message,
+                    "Ошибка обновления",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -732,7 +958,7 @@ namespace RrCadastralBot
 
         private void LoadConfigLinks()
         {
-            sheetsUrlBox.Text = ReadConfigValue("sheetsUrl", "");
+            sheetsUrlBox.Text = ReadConfigValue("sheetsUrl", "https://docs.google.com/spreadsheets/d/1Hl00tLipe3zZmLEHUdUi1E_VWKJNSTgIUUA731j_9Ts/edit?gid=0#gid=0");
             nspdUrlBox.Text = ReadConfigValue("nspdUrl", "https://nspd.gov.ru/map?thematic=PKK&theme_id=1&baseLayerId=235&is_copy_url=true&zoom=5&coordinate_x=7804891.637510094&coordinate_y=8181287.398947453");
             rosreestrUrlBox.Text = ReadConfigValue("rosreestrUrl", "https://lk.rosreestr.ru/eservices/real-estate-objects-online");
             gisUrlBox.Text = ReadConfigValue("gisUrl", "https://dom.gosuslugi.ru/#!/houses");
@@ -888,57 +1114,6 @@ namespace RrCadastralBot
         private string UnescapeJs(string value)
         {
             return (value ?? "").Replace("\\'", "'").Replace("\\\\", "\\");
-        }
-
-        private bool AskPassword()
-        {
-            if (string.IsNullOrEmpty(LinksPassword)) return true;
-            using (var form = new Form())
-            using (var label = new Label())
-            using (var box = new TextBox())
-            using (var ok = new Button())
-            using (var cancel = new Button())
-            {
-                form.Text = "Доступ к ссылкам";
-                form.Width = 340;
-                form.Height = 155;
-                form.StartPosition = FormStartPosition.CenterParent;
-                form.FormBorderStyle = FormBorderStyle.FixedDialog;
-                form.MaximizeBox = false;
-                form.MinimizeBox = false;
-                form.BackColor = Color.White;
-                form.AcceptButton = ok;
-                form.CancelButton = cancel;
-
-                label.Text = "Введите пароль";
-                label.Left = 16;
-                label.Top = 16;
-                label.Width = 290;
-
-                box.Left = 16;
-                box.Top = 42;
-                box.Width = 292;
-                box.PasswordChar = '*';
-
-                ok.Text = "ОК";
-                ok.Left = 152;
-                ok.Top = 82;
-                ok.Width = 74;
-                ok.DialogResult = DialogResult.OK;
-
-                cancel.Text = "Отмена";
-                cancel.Left = 234;
-                cancel.Top = 82;
-                cancel.Width = 74;
-                cancel.DialogResult = DialogResult.Cancel;
-
-                form.Controls.Add(label);
-                form.Controls.Add(box);
-                form.Controls.Add(ok);
-                form.Controls.Add(cancel);
-
-                return form.ShowDialog(this) == DialogResult.OK && box.Text == LinksPassword;
-            }
         }
 
         private void StartChrome()
@@ -1214,10 +1389,8 @@ Q2 Площадь ГИС ЖКХ
 
 НАСТРОЙКА ССЫЛОК
 
-Вкладка «Источники» защищена паролем.
-Пароль: бубалупа
-
-Там можно заменить ссылку на Google-таблицу или адреса сервисов.
+Во вкладке «Источники» можно заменить ссылку на Google-таблицу
+или адреса сервисов без дополнительного пароля.
 После изменения нажмите «Сохранить ссылки».
 
 
@@ -1233,6 +1406,14 @@ Q2 Площадь ГИС ЖКХ
 3. Нажмите «Открыть сервисы».
 4. Авторизуйтесь в сервисах.
 5. Запустите нужный режим.
+
+ОБНОВЛЕНИЯ
+
+- При запуске Кадастробот сам проверяет последний релиз на GitHub.
+- Если найдена новая версия, сверху появляется кнопка «Обновить до ...».
+- По кнопке установщик скачивается и запускается автоматически.
+- Во время активного сбора обновление заблокировано, чтобы не потерять прогресс.
+
 
 ПРОГРЕСС И ВОЗОБНОВЛЕНИЕ
 
