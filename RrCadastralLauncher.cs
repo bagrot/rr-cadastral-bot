@@ -272,7 +272,7 @@ namespace RrCadastralBot
 
         private const string ChromePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
         private const string ChromeArgs = @"--remote-debugging-port=9222 --user-data-dir=""C:\chrome-remote"" --profile-directory=Default";
-        private const string CurrentVersion = "3.0.4";
+        private const string CurrentVersion = "3.0.5";
         private const string UpdateApiUrl = "https://api.github.com/repos/bagrot/rr-cadastral-bot/releases/latest";
         private const string InstallerAssetName = "RR-Cadastral-Bot-Setup.exe";
         private readonly Color panelColor = Color.FromArgb(18, 22, 28);
@@ -1392,6 +1392,7 @@ Q2 Площадь ГИС ЖКХ
 Во вкладке «Источники» можно заменить ссылку на Google-таблицу
 или адреса сервисов без дополнительного пароля.
 После изменения нажмите «Сохранить ссылки».
+Настроенные ссылки сохраняются при обновлении программы.
 
 
 ПРАВИЛЬНЫЙ CHROME
